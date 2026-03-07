@@ -27,9 +27,13 @@ jobs:
           pip install -r requirements.txt
 
       - name: Fetch candidate sources from RSS feeds
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: python scripts/fetch_updates.py
 
       - name: Synthesize candidate best practices
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: python scripts/synthesize_best_practices.py
 
       - name: Rebuild Excel workbook export

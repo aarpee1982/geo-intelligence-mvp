@@ -19,6 +19,7 @@ BEST_PRACTICES_CSV = DATA_DIR / "best_practices.csv"
 REVIEWS_CSV = DATA_DIR / "reviews_log.csv"
 MANUAL_SUBMISSIONS_CSV = DATA_DIR / "manual_submissions.csv"
 REVIEW_TEMPLATE_CSV = DATA_DIR / "review_template.csv"
+DISCOVERED_CSV = DATA_DIR / "discovered_sources.csv"
 
 
 def load_csv(path: Path) -> pd.DataFrame:
@@ -40,7 +41,7 @@ def url_hash(url: str) -> str:
     return hashlib.md5(url.strip().lower().encode("utf-8")).hexdigest()[:10]
 
 
-def next_id(prefix: str, series: Iterable[str]) -> str:
+def next_id(prefix: str, series: Iterable) -> str:
     nums = []
     for value in series:
         if isinstance(value, str) and value.startswith(prefix):
@@ -54,15 +55,8 @@ def next_id(prefix: str, series: Iterable[str]) -> str:
 
 def ensure_manual_submission_table() -> pd.DataFrame:
     cols = [
-        "Submission ID",
-        "Submitted At",
-        "Submitted By",
-        "URL",
-        "Title / Note",
-        "Why It Matters",
-        "Priority",
-        "Status",
-        "Dedup Key",
+        "Submission ID", "Submitted At", "Submitted By", "URL",
+        "Title / Note", "Why It Matters", "Priority", "Status", "Dedup Key",
     ]
     df = load_csv(MANUAL_SUBMISSIONS_CSV)
     if df.empty:
@@ -88,6 +82,7 @@ def workbook_bytes() -> bytes:
 
     sheets = [
         ("Level1_Sources", load_csv(SOURCES_CSV)),
+        ("Level1_Candidates", load_csv(DISCOVERED_CSV)),
         ("Level2_BestPractices", load_csv(BEST_PRACTICES_CSV)),
         ("Level3_Reviews", load_csv(REVIEWS_CSV)),
         ("Manual_Submissions", load_csv(MANUAL_SUBMISSIONS_CSV)),

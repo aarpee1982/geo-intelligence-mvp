@@ -1,41 +1,129 @@
 watchlist:
+
+  # --- Official / AI Company Blogs ---
   - name: Google Search Central Blog
     category: official
     type: rss
     url: https://developers.google.com/search/blog/rss.xml
     platform_relevance: Google AI Overviews; Google AI Mode
     trust_score: 1.0
+
   - name: OpenAI News
     category: official
     type: rss
     url: https://openai.com/news/rss.xml
     platform_relevance: ChatGPT Search; GPT ecosystem
     trust_score: 1.0
+
+  - name: Anthropic News
+    category: official
+    type: rss
+    url: https://www.anthropic.com/rss.xml
+    platform_relevance: Claude; AI safety; LLM behavior
+    trust_score: 1.0
+
+  - name: Perplexity Blog
+    category: official
+    type: rss
+    url: https://blog.perplexity.ai/rss
+    platform_relevance: Perplexity AI search; answer engine
+    trust_score: 0.95
+
+  - name: Microsoft Bing Webmaster Blog
+    category: official
+    type: rss
+    url: https://blogs.bing.com/webmaster/rss
+    platform_relevance: Bing AI; Copilot search
+    trust_score: 0.95
+
+  - name: Google Research Blog
+    category: official
+    type: rss
+    url: https://research.google/blog/rss/
+    platform_relevance: Google AI; search research
+    trust_score: 0.95
+
+  # --- SEO / GEO Practitioners ---
   - name: Ahrefs Blog
     category: vendor_research
     type: rss
     url: https://ahrefs.com/blog/feed/
     platform_relevance: Google AI Overviews; GEO; SEO
     trust_score: 0.8
+
   - name: Semrush Blog
     category: vendor_research
     type: rss
     url: https://www.semrush.com/blog/feed/
     platform_relevance: GEO; AI Search; SEO
     trust_score: 0.75
+
+  - name: Search Engine Land
+    category: practitioner
+    type: rss
+    url: https://searchengineland.com/feed
+    platform_relevance: Google AI Overviews; SEO; GEO
+    trust_score: 0.8
+
+  - name: Search Engine Journal
+    category: practitioner
+    type: rss
+    url: https://www.searchenginejournal.com/feed/
+    platform_relevance: SEO; GEO; AI search
+    trust_score: 0.75
+
+  - name: Moz Blog
+    category: practitioner
+    type: rss
+    url: https://moz.com/blog/feed
+    platform_relevance: SEO; GEO; content strategy
+    trust_score: 0.75
+
+  # --- Academic Research ---
   - name: arXiv cs.IR recent
     category: research
     type: rss
     url: https://rss.arxiv.org/rss/cs.IR
     platform_relevance: IR; Retrieval; GEO
     trust_score: 0.85
+
   - name: arXiv cs.CL recent
     category: research
     type: rss
     url: https://rss.arxiv.org/rss/cs.CL
     platform_relevance: LLMs; language retrieval
     trust_score: 0.8
+
+  - name: arXiv cs.AI recent
+    category: research
+    type: rss
+    url: https://rss.arxiv.org/rss/cs.AI
+    platform_relevance: AI systems; agents; reasoning
+    trust_score: 0.8
+
+  # --- Industry Analysts ---
+  - name: The Batch by Andrew Ng
+    category: analyst
+    type: rss
+    url: https://www.deeplearning.ai/the-batch/feed/
+    platform_relevance: AI industry; LLMs; applied AI
+    trust_score: 0.85
+
+  - name: Benedict Evans
+    category: analyst
+    type: rss
+    url: https://www.ben-evans.com/benedictevans/rss.xml
+    platform_relevance: AI industry; tech strategy
+    trust_score: 0.8
+
+  - name: Stratechery
+    category: analyst
+    type: rss
+    url: https://stratechery.com/feed/
+    platform_relevance: AI strategy; platform dynamics
+    trust_score: 0.8
+
 manual_sources:
-  - name: HackMD
+  - name: HackMD / One-off studies
     category: curated_manual
     note: Add manually through the app when a strong piece appears.

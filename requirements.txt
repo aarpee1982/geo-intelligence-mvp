@@ -6,3 +6,4 @@ feedparser>=6.0
 beautifulsoup4>=4.12
 python-dateutil>=2.9
 PyYAML>=6.0
+openai>=1.30
