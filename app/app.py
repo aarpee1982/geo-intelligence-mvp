@@ -32,10 +32,10 @@ st.caption("Source ingestion, best-practice library, and article reviewer for AI
 
 # ── Model availability ────────────────────────────────────────────────────────
 
-HAS_DEEPSEEK = bool(os.getenv("DEEPSEEK_API_KEY"))
-HAS_OPENAI   = bool(os.getenv("OPENAI_API_KEY"))
-HAS_GEMINI   = bool(os.getenv("GEMINI_API_KEY"))
-MULTI_MODE   = HAS_DEEPSEEK and (HAS_OPENAI or HAS_GEMINI)
+def HAS_DEEPSEEK(): return bool(os.getenv("DEEPSEEK_API_KEY"))
+def HAS_OPENAI():   return bool(os.getenv("OPENAI_API_KEY"))
+def HAS_GEMINI():   return bool(os.getenv("GEMINI_API_KEY"))
+def MULTI_MODE():   return HAS_DEEPSEEK() and (HAS_OPENAI() or HAS_GEMINI())
 
 # ── Auto-approve helpers ──────────────────────────────────────────────────────
 
@@ -355,7 +355,7 @@ def multi_model_review_section(section_label, section_text, rules_summary):
 # ── Main review orchestrator ──────────────────────────────────────────────────
 
 def run_review(text: str, practices: pd.DataFrame, max_sections: int = 5) -> dict:
-    if not HAS_DEEPSEEK and not HAS_OPENAI and not HAS_GEMINI:
+    if not HAS_DEEPSEEK() and not HAS_OPENAI() and not HAS_GEMINI():
         return {**score_draft_heuristic(text, practices), "mode": "heuristic"}
 
     rules_summary = get_rules_summary(practices)
@@ -374,15 +374,15 @@ def run_review(text: str, practices: pd.DataFrame, max_sections: int = 5) -> dic
 
     section_results = []
 
-    use_multi = MULTI_MODE
+    use_multi = MULTI_MODE()
 
     for sec in sections:
         if use_multi:
             result = multi_model_review_section(sec["label"], sec["text"], rules_summary)
         else:
-            ds = review_section_deepseek(sec["label"], sec["text"], rules_summary) if HAS_DEEPSEEK else None
-            oai = review_section_openai(sec["label"], sec["text"], rules_summary) if HAS_OPENAI else None
-            gem = review_section_gemini(sec["label"], sec["text"], rules_summary) if HAS_GEMINI else None
+            ds = review_section_deepseek(sec["label"], sec["text"], rules_summary) if HAS_DEEPSEEK() else None
+            oai = review_section_openai(sec["label"], sec["text"], rules_summary) if HAS_OPENAI() else None
+            gem = review_section_gemini(sec["label"], sec["text"], rules_summary) if HAS_GEMINI() else None
             scores = [r.get("geo_score") for r in [ds, oai, gem] if r and r.get("geo_score") is not None]
             result = {
                 "label": sec["label"], "original": sec["text"],
@@ -577,14 +577,14 @@ with review_tab:
 
     # Model status bar
     model_cols = st.columns(4)
-    model_cols[0].markdown(f"{'🟢' if HAS_DEEPSEEK else '🔴'} **DeepSeek**")
-    model_cols[1].markdown(f"{'🟢' if HAS_OPENAI else '🔴'} **OpenAI**")
-    model_cols[2].markdown(f"{'🟢' if HAS_GEMINI else '🔴'} **Gemini**")
-    model_cols[3].markdown(f"{'🟢 Multi-model + consensus' if MULTI_MODE else '🟡 Single model' if (HAS_DEEPSEEK or HAS_OPENAI or HAS_GEMINI) else '⚪ Heuristic only'}")
+    model_cols[0].markdown(f"{'🟢' if HAS_DEEPSEEK() else '🔴'} **DeepSeek**")
+    model_cols[1].markdown(f"{'🟢' if HAS_OPENAI() else '🔴'} **OpenAI**")
+    model_cols[2].markdown(f"{'🟢' if HAS_GEMINI() else '🔴'} **Gemini**")
+    model_cols[3].markdown(f"{'🟢 Multi-model + consensus' if MULTI_MODE() else '🟡 Single model' if (HAS_DEEPSEEK() or HAS_OPENAI() or HAS_GEMINI()) else '⚪ Heuristic only'}")
 
-    if MULTI_MODE:
+    if MULTI_MODE():
         st.info("Multi-model review active. Each section is reviewed by all available models, then DeepSeek-Reasoner synthesizes the consensus. Takes 2-4 minutes for a full article.")
-    elif HAS_DEEPSEEK or HAS_OPENAI or HAS_GEMINI:
+    elif HAS_DEEPSEEK() or HAS_OPENAI() or HAS_GEMINI():
         st.info("Single model review active. Add more API keys to enable multi-model consensus.")
     else:
         st.warning("Running in heuristic mode. Add API keys in Streamlit secrets to enable AI review.")
