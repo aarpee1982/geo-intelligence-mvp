@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -7,72 +8,49 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-# Make scripts/ importable from app/
-
-
 from utils import (
-    BEST_PRACTICES_CSV,
-    DISCOVERED_CSV,
-    MANUAL_SUBMISSIONS_CSV,
-    REVIEWS_CSV,
-    SOURCES_CSV,
-    ensure_manual_submission_table,
-    ensure_reviews_table,
-    load_csv,
-    next_id,
-    now_iso,
-    save_csv,
-    url_hash,
-    workbook_bytes,
+    BEST_PRACTICES_CSV, DISCOVERED_CSV, MANUAL_SUBMISSIONS_CSV,
+    REVIEWS_CSV, SOURCES_CSV,
+    ensure_manual_submission_table, ensure_reviews_table,
+    load_csv, next_id, now_iso, save_csv, url_hash, workbook_bytes,
 )
 
 st.set_page_config(page_title="GEO Intelligence Hub", layout="wide")
 st.title("GEO Intelligence Hub")
 st.caption("Source ingestion, best-practice library, and article reviewer for AI search.")
 
-# ── Model availability ────────────────────────────────────────────────────────
-
+# ── Model availability (functions so env is read fresh each call) ─────────────
 def HAS_DEEPSEEK(): return bool(os.getenv("DEEPSEEK_API_KEY"))
-def HAS_OPENAI():   return bool(os.getenv("OPENAI_API_KEY"))
-def HAS_GEMINI():   return bool(os.getenv("GEMINI_API_KEY"))
-def MULTI_MODE():   return HAS_DEEPSEEK() and (HAS_OPENAI() or HAS_GEMINI())
+def HAS_KIMI():     return bool(os.getenv("KIMI_API_KEY"))
+def MULTI_MODE():   return HAS_DEEPSEEK() and HAS_KIMI()
 
-# ── Auto-approve helpers ──────────────────────────────────────────────────────
-
+# ── Auto-approve ──────────────────────────────────────────────────────────────
 AUTO_APPROVE_SCORE = 60
 AUTO_APPROVE_CATEGORIES = {"official", "research", "vendor_research", "practitioner", "analyst"}
 
-
-def promote_to_library(row: pd.Series, approved_df: pd.DataFrame, source: str = "auto") -> pd.DataFrame:
+def promote_to_library(row, approved_df, source="auto"):
     existing_urls = set(approved_df.get("URL", pd.Series(dtype=str)).astype(str).tolist())
     if row.get("URL", "") in existing_urls:
         return approved_df
     new_id = next_id("SRC", approved_df.get("Source ID", pd.Series(dtype=str)))
     new_row = {
-        "Source ID": new_id,
-        "Title": row.get("Title", ""),
-        "URL": row.get("URL", ""),
+        "Source ID": new_id, "Title": row.get("Title", ""), "URL": row.get("URL", ""),
         "Source Type": "Auto-approved / pending human review" if source == "auto" else "Boss submission",
-        "Publisher": row.get("Feed Name", ""),
-        "Author": "",
+        "Publisher": row.get("Feed Name", ""), "Author": "",
         "Publication Date": row.get("Published Date", ""),
         "Platform Relevance": row.get("Platform Relevance", ""),
-        "Evidence Type": "Auto-discovered",
-        "Sample Size / Scope": "",
-        "Core Claim": str(row.get("Summary", ""))[:300],
+        "Evidence Type": "Auto-discovered", "Sample Size / Scope": "",
+        "Core Claim": str(row.get("Summary", "")),
         "Extracted Findings": row.get("Summary", ""),
-        "Operational Implications": "",
-        "Confidence Level": "Emerging",
-        "Contradictions / Caveats": "",
-        "Tags": row.get("Feed Category", ""),
+        "Operational Implications": "", "Confidence Level": "Emerging",
+        "Contradictions / Caveats": "", "Tags": row.get("Feed Category", ""),
         "Last Reviewed": now_iso()[:10],
     }
     return pd.concat([approved_df, pd.DataFrame([new_row])], ignore_index=True)
 
-
-def bulk_auto_approve(discovered: pd.DataFrame):
+def bulk_auto_approve(discovered):
     approved_df = load_csv(SOURCES_CSV)
-    candidates = discovered[discovered.get("Status", pd.Series(dtype=str)) == "candidate"].copy() if "Status" in discovered.columns else discovered.copy()
+    candidates = discovered[discovered["Status"] == "candidate"].copy() if "Status" in discovered.columns else discovered.copy()
     eligible = candidates[
         (candidates["Authority Score"].astype(float) >= AUTO_APPROVE_SCORE) &
         (candidates["Feed Category"].isin(AUTO_APPROVE_CATEGORIES))
@@ -84,20 +62,17 @@ def bulk_auto_approve(discovered: pd.DataFrame):
         count += 1
     return approved_df, discovered, count
 
-
-def auto_approve_boss_submissions(submissions: pd.DataFrame):
+def auto_approve_boss_submissions(submissions):
     approved_df = load_csv(SOURCES_CSV)
     new_subs = submissions[submissions.get("Status", pd.Series(dtype=str)) == "new"]
     count = 0
     for _, row in new_subs.iterrows():
         fake_row = pd.Series({
-            "Title": row.get("Title / Note", ""),
-            "URL": row.get("URL", ""),
-            "Feed Name": f"Boss submission by {row.get('Submitted By', 'Unknown')}",
+            "Title": row.get("Title / Note", ""), "URL": row.get("URL", ""),
+            "Feed Name": "Boss submission by " + row.get("Submitted By", "Unknown"),
             "Feed Category": "boss_submission",
             "Published Date": row.get("Submitted At", "")[:10],
-            "Platform Relevance": "",
-            "Summary": row.get("Why It Matters", ""),
+            "Platform Relevance": "", "Summary": row.get("Why It Matters", ""),
             "Authority Score": 100,
         })
         approved_df = promote_to_library(fake_row, approved_df, source="boss")
@@ -105,353 +80,219 @@ def auto_approve_boss_submissions(submissions: pd.DataFrame):
         count += 1
     return approved_df, submissions, count
 
-
-# ── Section splitter ──────────────────────────────────────────────────────────
-
-def split_into_sections(text: str) -> list[dict]:
-    lines = text.strip().split("\n")
-    sections, current_label, current_lines, para_count = [], "Opening", [], 0
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            if current_lines:
-                sections.append({"label": current_label, "text": " ".join(current_lines).strip()})
-                current_lines = []
-                para_count += 1
-                current_label = f"Paragraph {para_count}"
-        elif stripped.startswith("#"):
-            if current_lines:
-                sections.append({"label": current_label, "text": " ".join(current_lines).strip()})
-                current_lines = []
-            current_label = f"Heading: {stripped.lstrip('#').strip()}"
-        else:
-            current_lines.append(stripped)
-    if current_lines:
-        sections.append({"label": current_label, "text": " ".join(current_lines).strip()})
-    return [s for s in sections if len(s["text"].split()) >= 8]
-
-
-def get_rules_summary(practices: pd.DataFrame) -> str:
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def get_rules_summary(practices):
     if practices.empty:
         return ""
     return "\n".join(
-        f"- {r['Rule Title']}: {r['Rule Statement']}"
+        "- " + str(r["Rule Title"]) + ": " + str(r["Rule Statement"])
         for _, r in practices.head(10).iterrows()
         if pd.notna(r.get("Rule Title")) and pd.notna(r.get("Rule Statement"))
     )
 
+def build_prompt(label, text, rules):
+    return (
+        "You are a GEO editor. Review this article section so it gets cited by AI search engines.\n\n"
+        "GEO best practices:\n" + rules + "\n\n"
+        "Section: " + label + "\n"
+        "Text: " + text + "\n\n"
+        "Return ONLY valid JSON with keys:\n"
+        "geo_score (int 0-100), issues (list of strings), suggestion (rewritten text), why (one sentence)"
+    )
 
-# ── Heuristic fallback ────────────────────────────────────────────────────────
-
-def score_draft_heuristic(text: str, practices: pd.DataFrame) -> dict:
-    text_low = text.lower()
-    words = re.findall(r"\w+", text)
-    first_120 = " ".join(words[:120]).lower()
-    matched, violated, suggestions = [], [], []
-
-    if words:
-        if len(first_120.split()) > 20 and not any(k in first_120 for k in ["in short", "bottom line", "key takeaway", "the answer", "summary"]):
-            violated.append("BP-01"); suggestions.append("Add a direct answer in the opening 2-4 lines.")
-        else:
-            matched.append("BP-01")
-
-    if [s for s in re.split(r"[.!?]\s+", text) if len(s.split()) > 28]:
-        violated.append("BP-02"); suggestions.append("Split long sentences into shorter factual claims.")
-    else:
-        matched.append("BP-02")
-
-    if not any(m in text_low for m in ["##", "###", "faq", "table", "key takeaways"]):
-        violated.append("BP-03"); suggestions.append("Add subheads, FAQ blocks, or tables.")
-    else:
-        matched.append("BP-03")
-
-    if not any(m in text_low for m in ["source", "study", "data", "according to", "official"]):
-        violated.append("BP-06"); suggestions.append("Anchor claims in explicit evidence.")
-    else:
-        matched.append("BP-06")
-
-    score = max(35, min(100, 100 - 8 * len(set(violated))))
-    rationale = []
-    for bp in sorted(set(violated)):
-        row = practices[practices["Practice ID"] == bp]
-        if not row.empty:
-            r = row.iloc[0]
-            rationale.append(f"{bp} — {r['Rule Title']}: {r['Why It Matters']}")
-
-    return {"matched": sorted(set(matched)), "violated": sorted(set(violated)),
-            "suggestions": suggestions, "score": score, "rationale": rationale,
-            "sections": [], "executive_summary": "", "mode": "heuristic"}
-
-
-# ── Executive summary ─────────────────────────────────────────────────────────
-
-def deepseek_executive_summary(section_results: list, rules_summary: str) -> str:
-    try:
-        from openai import OpenAI
-        import json
-        key = os.getenv("DEEPSEEK_API_KEY")
-        if not key:
-            return ""
-        client = OpenAI(api_key=key, base_url="https://api.deepseek.com")
-        scores = [r.get("avg_score") for r in section_results if r.get("avg_score") is not None]
-        avg = round(sum(scores) / len(scores)) if scores else "N/A"
-        issues = []
-        for r in section_results:
-            for model_key in ["deepseek", "openai", "gemini"]:
-                for issue in (r.get(model_key) or {}).get("issues", []):
-                    issues.append(issue)
-        prompt = f"""You are a senior GEO strategist. Write a 3-5 sentence executive summary of this article's AI-citation readiness.
-
-Average section GEO score: {avg}/100
-Sections reviewed: {len(section_results)}
-Key issues (from all models): {json.dumps(issues[:12])}
-GEO best practices: {rules_summary}
-
-Be direct. Start with the overall verdict. Name the 2-3 most important fixes. End with one sentence on what the article achieves after those fixes. Plain paragraphs, no bullet points."""
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=400, temperature=0.3,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"Executive summary unavailable: {e}"
-
-
-
-# ── Multi-model review functions (inlined) ───────────────────────────────────
-
-def _deepseek_client():
+# ── API clients ───────────────────────────────────────────────────────────────
+def deepseek_client():
     from openai import OpenAI
-    key = os.getenv("DEEPSEEK_API_KEY")
-    if not key:
-        raise EnvironmentError("DEEPSEEK_API_KEY not set")
-    return OpenAI(api_key=key, base_url="https://api.deepseek.com")
+    return OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com")
 
-def _openai_client():
+def kimi_client():
     from openai import OpenAI
-    key = os.getenv("OPENAI_API_KEY")
-    if not key:
-        raise EnvironmentError("OPENAI_API_KEY not set")
-    return OpenAI(api_key=key)
+    return OpenAI(api_key=os.getenv("KIMI_API_KEY"), base_url="https://api.moonshot.cn/v1")
 
-def _build_section_prompt(section_label, section_text, rules_summary):
-    return f"""You are a GEO (Generative Engine Optimization) editor. Review this article section and give specific, actionable feedback so it gets cited by AI search engines like Google AI Overviews, ChatGPT Search, and Perplexity.
-
-GEO best practices:
-{rules_summary}
-
-Section: {section_label}
-Text:
-\"{section_text}\"
-
-Return ONLY a valid JSON object with these exact keys:
-- "geo_score": integer 0-100 for this section's AI-citation readiness
-- "issues": list of strings, each describing one specific problem (reference the actual words)
-- "suggestion": a rewritten version that fixes the issues (same meaning, better form)
-- "why": one sentence explaining the most important change and why it helps AI citations"""
-
-def review_section_deepseek(section_label, section_text, rules_summary):
+# ── Section reviewers ─────────────────────────────────────────────────────────
+def review_deepseek(label, text, rules):
     try:
-        client = _deepseek_client()
-        response = client.chat.completions.create(
+        r = deepseek_client().chat.completions.create(
             model="deepseek-chat",
-            messages=[{"role": "user", "content": _build_section_prompt(section_label, section_text, rules_summary)}],
+            messages=[{"role": "user", "content": build_prompt(label, text, rules)}],
             max_tokens=800, temperature=0.3,
             response_format={"type": "json_object"},
         )
-        return json.loads(response.choices[0].message.content)
+        return json.loads(r.choices[0].message.content)
     except Exception as e:
-        print(f"[DeepSeek] failed: {e}")
+        st.warning("DeepSeek error on " + label + ": " + str(e))
         return None
 
-def review_section_openai(section_label, section_text, rules_summary):
+def review_kimi(label, text, rules):
     try:
-        client = _openai_client()
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": _build_section_prompt(section_label, section_text, rules_summary)}],
+        r = kimi_client().chat.completions.create(
+            model="moonshot-v1-8k",
+            messages=[{"role": "user", "content": build_prompt(label, text, rules)}],
             max_tokens=800, temperature=0.3,
-            response_format={"type": "json_object"},
         )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        print(f"[OpenAI] failed: {e}")
-        return None
-
-def review_section_gemini(section_label, section_text, rules_summary):
-    try:
-        import urllib.request
-        key = os.getenv("GEMINI_API_KEY")
-        if not key:
-            return None
-        prompt = _build_section_prompt(section_label, section_text, rules_summary)
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}"
-        payload = json.dumps({
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 800}
-        }).encode("utf-8")
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read())
-        raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        raw = r.choices[0].message.content.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
         return json.loads(raw.strip())
     except Exception as e:
-        print(f"[Gemini] failed: {e}")
+        st.warning("Kimi error on " + label + ": " + str(e))
         return None
 
-def synthesize_consensus(section_label, section_text, ds, oai, gem, rules_summary):
-    available = []
+# ── Consensus ─────────────────────────────────────────────────────────────────
+def synthesize_consensus(label, text, ds, kimi, rules):
+    parts = []
     if ds:
-        available.append(f"DeepSeek says:\nIssues: {ds.get('issues')}\nSuggestion: {ds.get('suggestion')}\nWhy: {ds.get('why')}")
-    if oai:
-        available.append(f"OpenAI says:\nIssues: {oai.get('issues')}\nSuggestion: {oai.get('suggestion')}\nWhy: {oai.get('why')}")
-    if gem:
-        available.append(f"Gemini says:\nIssues: {gem.get('issues')}\nSuggestion: {gem.get('suggestion')}\nWhy: {gem.get('why')}")
-    if not available:
-        return {"consensus_suggestion": section_text, "consensus_why": "No models returned results.", "consensus_score": None, "agreement_points": []}
-    if len(available) == 1:
-        result = ds or oai or gem
-        return {"consensus_suggestion": result.get("suggestion", section_text), "consensus_why": result.get("why", ""), "consensus_score": result.get("geo_score"), "agreement_points": []}
-    prompt = f"""You are DeepSeek-Reasoner synthesizing GEO feedback from multiple AI models into one authoritative consensus.
-Section: {section_label}
-Original: \"{section_text}\"
-GEO rules: {rules_summary}
-Reviews: {chr(10).join(available)}
-Return ONLY valid JSON with: consensus_suggestion, consensus_why (2 sentences), consensus_score (0-100), agreement_points (list of 1-3 strings)."""
+        parts.append("DeepSeek: issues=" + str(ds.get("issues")) + " suggestion=" + str(ds.get("suggestion")))
+    if kimi:
+        parts.append("Kimi: issues=" + str(kimi.get("issues")) + " suggestion=" + str(kimi.get("suggestion")))
+    if not parts:
+        return {"consensus_suggestion": text, "consensus_why": "No models returned results.", "consensus_score": None, "agreement_points": []}
+    if len(parts) == 1:
+        result = ds or kimi
+        return {"consensus_suggestion": result.get("suggestion", text), "consensus_why": result.get("why", ""), "consensus_score": result.get("geo_score"), "agreement_points": []}
+    prompt = (
+        "You are DeepSeek-Reasoner. Synthesize GEO feedback into one consensus rewrite.\n"
+        "Section: " + label + "\nOriginal: " + text + "\n"
+        "Reviews:\n" + "\n".join(parts) + "\n"
+        "Return ONLY valid JSON: consensus_suggestion, consensus_why (2 sentences), consensus_score (0-100), agreement_points (list of 1-3 strings)"
+    )
     for model in ["deepseek-reasoner", "deepseek-chat"]:
         try:
-            client = _deepseek_client()
-            response = client.chat.completions.create(
+            r = deepseek_client().chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=1000, temperature=0.2,
                 response_format={"type": "json_object"},
             )
-            return json.loads(response.choices[0].message.content)
-        except Exception as e:
-            print(f"[Consensus/{model}] failed: {e}")
+            return json.loads(r.choices[0].message.content)
+        except Exception:
             continue
-    return {"consensus_suggestion": (ds or oai or gem or {}).get("suggestion", section_text), "consensus_why": "Consensus unavailable.", "consensus_score": None, "agreement_points": []}
+    result = ds or kimi or {}
+    return {"consensus_suggestion": result.get("suggestion", text), "consensus_why": "Consensus unavailable.", "consensus_score": None, "agreement_points": []}
 
-def multi_model_review_section(section_label, section_text, rules_summary):
-    ds  = review_section_deepseek(section_label, section_text, rules_summary)
-    oai = review_section_openai(section_label, section_text, rules_summary)
-    gem = review_section_gemini(section_label, section_text, rules_summary)
-    consensus = synthesize_consensus(section_label, section_text, ds, oai, gem, rules_summary)
-    scores = [r.get("geo_score") for r in [ds, oai, gem] if r and r.get("geo_score") is not None]
-    return {
-        "label": section_label, "original": section_text,
-        "deepseek": ds, "openai": oai, "gemini": gem,
-        "consensus": consensus,
-        "avg_score": round(sum(scores)/len(scores)) if scores else None,
-        "models_succeeded": sum(1 for r in [ds, oai, gem] if r is not None),
-    }
+# ── Executive summary ─────────────────────────────────────────────────────────
+def executive_summary(section_results, rules):
+    try:
+        scores = [r.get("avg_score") for r in section_results if r.get("avg_score") is not None]
+        avg = round(sum(scores) / len(scores)) if scores else "N/A"
+        issues = []
+        for r in section_results:
+            for k in ["deepseek", "kimi"]:
+                for issue in (r.get(k) or {}).get("issues", []):
+                    issues.append(issue)
+        prompt = (
+            "You are a senior GEO strategist. Write a 3-5 sentence executive summary of this article's AI-citation readiness.\n"
+            "Average GEO score: " + str(avg) + "/100. Sections reviewed: " + str(len(section_results)) + ".\n"
+            "Key issues: " + json.dumps(issues[:10]) + "\n"
+            "Be direct. State the verdict, name 2-3 fixes, end with what the article achieves after those fixes. No bullet points."
+        )
+        r = deepseek_client().chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=400, temperature=0.3,
+        )
+        return r.choices[0].message.content.strip()
+    except Exception as e:
+        return "Executive summary unavailable: " + str(e)
 
-# ── Main review orchestrator ──────────────────────────────────────────────────
+# ── Heuristic fallback ────────────────────────────────────────────────────────
+def heuristic_review(text, practices):
+    text_low = text.lower()
+    words = re.findall(r"\w+", text)
+    first_120 = " ".join(words[:120]).lower()
+    violated, suggestions = [], []
+    if len(first_120.split()) > 20 and not any(k in first_120 for k in ["in short", "bottom line", "the answer", "summary"]):
+        violated.append("BP-01"); suggestions.append("Add a direct answer in the opening 2-4 lines.")
+    if any(len(s.split()) > 28 for s in re.split(r"[.!?]\s+", text)):
+        violated.append("BP-02"); suggestions.append("Split long sentences into shorter factual claims.")
+    if not any(m in text_low for m in ["##", "faq", "table", "key takeaways"]):
+        violated.append("BP-03"); suggestions.append("Add subheads, FAQ blocks, or tables.")
+    if not any(m in text_low for m in ["source", "study", "data", "according to"]):
+        violated.append("BP-06"); suggestions.append("Anchor claims in explicit evidence.")
+    score = max(35, min(100, 100 - 8 * len(set(violated))))
+    return {"matched": [], "violated": sorted(set(violated)), "suggestions": suggestions,
+            "score": score, "rationale": [], "sections": [], "executive_summary": "", "mode": "heuristic"}
 
-def run_review(text: str, practices: pd.DataFrame, max_sections: int = 5) -> dict:
-    if not HAS_DEEPSEEK() and not HAS_OPENAI() and not HAS_GEMINI():
-        return {**score_draft_heuristic(text, practices), "mode": "heuristic"}
+# ── Main review ───────────────────────────────────────────────────────────────
+def run_review(text, practices):
+    if not HAS_DEEPSEEK() and not HAS_KIMI():
+        return heuristic_review(text, practices)
 
-    rules_summary = get_rules_summary(practices)
-
-    # Take first 400 words and split into 4 chunks of ~100 words each
+    rules = get_rules_summary(practices)
     words = text.split()
-    first_400 = words[:400]
     chunk_size = 100
     sections = []
-    for i in range(0, len(first_400), chunk_size):
-        chunk = first_400[i:i+chunk_size]
+    for i in range(0, min(len(words), 400), chunk_size):
+        chunk = words[i:i+chunk_size]
         if chunk:
-            start = i + 1
-            end = min(i + chunk_size, len(first_400))
-            sections.append({"label": f"Section {len(sections)+1} (words {start}-{end})", "text": " ".join(chunk)})
+            sections.append({
+                "label": "Section " + str(len(sections)+1) + " (words " + str(i+1) + "-" + str(i+len(chunk)) + ")",
+                "text": " ".join(chunk)
+            })
 
-    section_results = []
-
-    use_multi = MULTI_MODE()
-
+    results = []
     for sec in sections:
-        if use_multi:
-            result = multi_model_review_section(sec["label"], sec["text"], rules_summary)
-        else:
-            ds = review_section_deepseek(sec["label"], sec["text"], rules_summary) if HAS_DEEPSEEK() else None
-            oai = review_section_openai(sec["label"], sec["text"], rules_summary) if HAS_OPENAI() else None
-            gem = review_section_gemini(sec["label"], sec["text"], rules_summary) if HAS_GEMINI() else None
-            scores = [r.get("geo_score") for r in [ds, oai, gem] if r and r.get("geo_score") is not None]
-            result = {
-                "label": sec["label"], "original": sec["text"],
-                "deepseek": ds, "openai": oai, "gemini": gem,
-                "consensus": ds or oai or gem or {},
-                "avg_score": round(sum(scores)/len(scores)) if scores else None,
-                "models_succeeded": sum(1 for r in [ds, oai, gem] if r),
-            }
-        section_results.append(result)
+        ds   = review_deepseek(sec["label"], sec["text"], rules) if HAS_DEEPSEEK() else None
+        kimi = review_kimi(sec["label"], sec["text"], rules)     if HAS_KIMI()     else None
+        consensus = synthesize_consensus(sec["label"], sec["text"], ds, kimi, rules)
+        scores = [r.get("geo_score") for r in [ds, kimi] if r and r.get("geo_score") is not None]
+        results.append({
+            "label": sec["label"], "original": sec["text"],
+            "deepseek": ds, "kimi": kimi,
+            "consensus": consensus,
+            "avg_score": round(sum(scores)/len(scores)) if scores else None,
+            "models_succeeded": sum(1 for r in [ds, kimi] if r is not None),
+        })
 
-    exec_summary = deepseek_executive_summary(section_results, rules_summary)
-    scores = [r["avg_score"] for r in section_results if r.get("avg_score") is not None]
-    overall = round(sum(scores) / len(scores)) if scores else 50
+    exec_sum = executive_summary(results, rules) if HAS_DEEPSEEK() else ""
+    scores = [r["avg_score"] for r in results if r.get("avg_score") is not None]
+    overall = round(sum(scores)/len(scores)) if scores else 50
+    mode = "multi_model" if MULTI_MODE() else "single_model"
 
-    return {
-        "score": overall, "sections": section_results,
-        "executive_summary": exec_summary,
-        "matched": [], "violated": [], "suggestions": [], "rationale": [],
-        "mode": "multi_model" if use_multi else "single_model",
-    }
-
+    return {"score": overall, "sections": results, "executive_summary": exec_sum,
+            "matched": [], "violated": [], "suggestions": [], "rationale": [], "mode": mode}
 
 # ── Save helpers ──────────────────────────────────────────────────────────────
-
 def save_submission(submitter, url, title, why, priority):
     df = ensure_manual_submission_table()
     dedup = url_hash(url)
     if not df.empty and dedup in df.get("Dedup Key", pd.Series(dtype=str)).astype(str).tolist():
         st.warning("This link already exists in the intake queue.")
         return
-    submission_id = next_id("SUB", df.get("Submission ID", pd.Series(dtype=str)))
-    row = {"Submission ID": submission_id, "Submitted At": now_iso(), "Submitted By": submitter,
-           "URL": url, "Title / Note": title, "Why It Matters": why, "Priority": priority,
-           "Status": "new", "Dedup Key": dedup}
+    sid = next_id("SUB", df.get("Submission ID", pd.Series(dtype=str)))
+    row = {"Submission ID": sid, "Submitted At": now_iso(), "Submitted By": submitter,
+           "URL": url, "Title / Note": title, "Why It Matters": why,
+           "Priority": priority, "Status": "new", "Dedup Key": dedup}
     df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
     save_csv(df, MANUAL_SUBMISSIONS_CSV)
     approved_df, _, _ = auto_approve_boss_submissions(df)
     save_csv(approved_df, SOURCES_CSV)
     save_csv(df, MANUAL_SUBMISSIONS_CSV)
-    st.success(f"Saved {submission_id} and auto-approved into the Source Library.")
+    st.success("Saved " + sid + " and auto-approved into the Source Library.")
 
-
-def save_review(title, topic, content_type, primary_platform, result):
+def save_review(title, topic, content_type, platform, result):
     df = ensure_reviews_table()
-    review_id = next_id("REV", df.get("Review ID", pd.Series(dtype=str)))
-    row = {"Review ID": review_id, "Draft Title": title, "Target Query / Topic": topic,
-           "Content Type": content_type, "Primary Platform": primary_platform,
-           "Matched Best Practices": "; ".join(result.get("matched", [])),
-           "Violated Best Practices": "; ".join(result.get("violated", [])),
+    rid = next_id("REV", df.get("Review ID", pd.Series(dtype=str)))
+    row = {"Review ID": rid, "Draft Title": title, "Target Query / Topic": topic,
+           "Content Type": content_type, "Primary Platform": platform,
+           "Matched Best Practices": "", "Violated Best Practices": "; ".join(result.get("violated", [])),
            "Suggested Edits": " | ".join(result.get("suggestions", [])),
-           "Applied Edits": "", "What Changed": "",
-           "Why It Changed": " | ".join(result.get("rationale", [])),
+           "Applied Edits": "", "What Changed": "", "Why It Changed": "",
            "Evidence Links Used": "", "Human Override Notes": "",
-           "Final Score / 100": result.get("score", ""),
-           "Reviewed Date": now_iso()[:10]}
+           "Final Score / 100": result.get("score", ""), "Reviewed Date": now_iso()[:10]}
     df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
     save_csv(df, REVIEWS_CSV)
 
-
-# ── Load data ─────────────────────────────────────────────────────────────────
-
-sources    = load_csv(SOURCES_CSV)
-practices  = load_csv(BEST_PRACTICES_CSV)
+# ── Data ──────────────────────────────────────────────────────────────────────
+sources     = load_csv(SOURCES_CSV)
+practices   = load_csv(BEST_PRACTICES_CSV)
 submissions = ensure_manual_submission_table()
-reviews    = ensure_reviews_table()
-discovered = load_csv(DISCOVERED_CSV)
+reviews     = ensure_reviews_table()
+discovered  = load_csv(DISCOVERED_CSV)
 
 # ── KPI bar ───────────────────────────────────────────────────────────────────
-
 k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("Approved sources", len(load_csv(SOURCES_CSV)))
 k2.metric("Best practices", len(practices))
@@ -461,13 +302,11 @@ pending = len(discovered[discovered["Status"] == "candidate"]) if not discovered
 k5.metric("Candidates pending", pending)
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-
 intake_tab, library_tab, candidates_tab, practice_tab, review_tab = st.tabs([
     "Add Source", "Source Library", "Approve Candidates", "Best Practices", "Article Reviewer",
 ])
 
-# ── Tab 1 ─────────────────────────────────────────────────────────────────────
-
+# Tab 1 ────────────────────────────────────────────────────────────────────────
 with intake_tab:
     st.subheader("Boss-friendly source intake")
     st.info("Any source submitted here is automatically approved into the Source Library immediately.")
@@ -483,8 +322,7 @@ with intake_tab:
             else:
                 save_submission(submitter.strip() or "Unknown", url.strip(), title.strip(), why.strip(), priority)
 
-# ── Tab 2 ─────────────────────────────────────────────────────────────────────
-
+# Tab 2 ────────────────────────────────────────────────────────────────────────
 with library_tab:
     st.subheader("Approved evidence library")
     search = st.text_input("Filter by title, publisher, tag, or platform")
@@ -497,8 +335,7 @@ with library_tab:
                        file_name="geo_intelligence_live.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-# ── Tab 3 ─────────────────────────────────────────────────────────────────────
-
+# Tab 3 ────────────────────────────────────────────────────────────────────────
 with candidates_tab:
     st.subheader("Candidate sources pending review")
     if discovered.empty:
@@ -514,13 +351,13 @@ with candidates_tab:
             ])
             col1, col2 = st.columns([2, 1])
             with col1:
-                st.markdown(f"**{eligible_count} candidates** eligible for bulk auto-approve (score 60+).")
+                st.markdown("**" + str(eligible_count) + " candidates** eligible for bulk auto-approve (score 60+).")
             with col2:
-                if st.button(f"Bulk auto-approve {eligible_count} candidates", type="primary"):
+                if st.button("Bulk auto-approve " + str(eligible_count) + " candidates", type="primary"):
                     approved_df, updated_discovered, count = bulk_auto_approve(discovered)
                     save_csv(approved_df, SOURCES_CSV)
                     save_csv(updated_discovered, DISCOVERED_CSV)
-                    st.success(f"Auto-approved {count} sources.")
+                    st.success("Auto-approved " + str(count) + " sources.")
                     st.rerun()
             st.divider()
             filter_feed = st.multiselect("Filter by feed", sorted(candidates["Feed Name"].dropna().unique().tolist()))
@@ -534,11 +371,11 @@ with candidates_tab:
                 selected_url = st.selectbox("Select URL to approve", candidate_urls)
                 selected_row = candidates[candidates["URL"] == selected_url].iloc[0]
                 with st.form("approve_form"):
-                    st.write(f"**{selected_row.get('Title', '')}**")
-                    st.write(str(selected_row.get("Summary", ""))[:300])
+                    st.write("**" + str(selected_row.get("Title", "")) + "**")
+                    st.write(str(selected_row.get("Summary", "")))
                     source_type = st.selectbox("Source type", ["Study / Article", "Vendor study / Article", "Official documentation", "Research paper", "Industry report"])
                     confidence  = st.selectbox("Confidence level", ["Strong", "Official", "Emerging", "Speculative"])
-                    core_claim  = st.text_area("Core claim", value=str(selected_row.get("Summary", ""))[:200])
+                    core_claim  = st.text_area("Core claim", value=str(selected_row.get("Summary", "")))
                     tags        = st.text_input("Tags (comma separated)")
                     if st.form_submit_button("Approve and add to Source Library"):
                         approved_df = load_csv(SOURCES_CSV)
@@ -550,7 +387,7 @@ with candidates_tab:
                             "Publication Date": selected_row.get("Published Date", ""),
                             "Platform Relevance": selected_row.get("Platform Relevance", ""),
                             "Evidence Type": "Observational / auto-discovered", "Sample Size / Scope": "",
-                            "Core Claim": core_claim, "Extracted Findings": selected_row.get("Summary", ""),
+                            "Core Claim": core_claim, "Extracted Findings": str(selected_row.get("Summary", "")),
                             "Operational Implications": "", "Confidence Level": confidence,
                             "Contradictions / Caveats": "", "Tags": tags, "Last Reviewed": now_iso()[:10],
                         }
@@ -558,11 +395,10 @@ with candidates_tab:
                         save_csv(approved_df, SOURCES_CSV)
                         discovered.loc[discovered["URL"] == selected_url, "Status"] = "approved"
                         save_csv(discovered, DISCOVERED_CSV)
-                        st.success(f"Approved as {new_id}.")
+                        st.success("Approved as " + new_id + ".")
                         st.rerun()
 
-# ── Tab 4 ─────────────────────────────────────────────────────────────────────
-
+# Tab 4 ────────────────────────────────────────────────────────────────────────
 with practice_tab:
     st.subheader("Canonical best-practice library")
     confidence_opts = sorted(practices["Confidence Level"].dropna().unique().tolist()) if not practices.empty else []
@@ -570,120 +406,98 @@ with practice_tab:
     pview = practices[practices["Confidence Level"].isin(confidence)] if confidence else practices
     st.dataframe(pview, use_container_width=True, hide_index=True)
 
-# ── Tab 5 ─────────────────────────────────────────────────────────────────────
-
+# Tab 5 ────────────────────────────────────────────────────────────────────────
 with review_tab:
     st.subheader("Article reviewer")
 
-    # Model status bar
-    model_cols = st.columns(4)
-    model_cols[0].markdown(f"{'🟢' if HAS_DEEPSEEK() else '🔴'} **DeepSeek**")
-    model_cols[1].markdown(f"{'🟢' if HAS_OPENAI() else '🔴'} **OpenAI**")
-    model_cols[2].markdown(f"{'🟢' if HAS_GEMINI() else '🔴'} **Gemini**")
-    model_cols[3].markdown(f"{'🟢 Multi-model + consensus' if MULTI_MODE() else '🟡 Single model' if (HAS_DEEPSEEK() or HAS_OPENAI() or HAS_GEMINI()) else '⚪ Heuristic only'}")
+    mc = st.columns(3)
+    mc[0].markdown(("🟢" if HAS_DEEPSEEK() else "🔴") + " **DeepSeek**")
+    mc[1].markdown(("🟢" if HAS_KIMI() else "🔴") + " **Kimi**")
+    mc[2].markdown("🟢 Multi-model + consensus" if MULTI_MODE() else ("🟡 Single model" if HAS_DEEPSEEK() or HAS_KIMI() else "⚪ Heuristic only"))
 
     if MULTI_MODE():
-        st.info("Multi-model review active. Each section is reviewed by all available models, then DeepSeek-Reasoner synthesizes the consensus. Takes 2-4 minutes for a full article.")
-    elif HAS_DEEPSEEK() or HAS_OPENAI() or HAS_GEMINI():
-        st.info("Single model review active. Add more API keys to enable multi-model consensus.")
+        st.info("Multi-model review active. DeepSeek and Kimi each review every section, then DeepSeek-Reasoner synthesizes the consensus.")
+    elif HAS_DEEPSEEK() or HAS_KIMI():
+        st.info("Single model active. Add both DEEPSEEK_API_KEY and KIMI_API_KEY in Streamlit secrets for full consensus mode.")
     else:
-        st.warning("Running in heuristic mode. Add API keys in Streamlit secrets to enable AI review.")
+        st.warning("Heuristic mode only. Add API keys in Streamlit Cloud secrets to enable AI review.")
 
     with st.form("draft_review"):
-        draft_title     = st.text_input("Draft title")
-        topic           = st.text_input("Target topic / query")
-        content_type    = st.selectbox("Content type", ["Blog article", "Landing page", "Thought leadership", "Research page"])
+        draft_title      = st.text_input("Draft title")
+        topic            = st.text_input("Target topic / query")
+        content_type     = st.selectbox("Content type", ["Blog article", "Landing page", "Thought leadership", "Research page"])
         primary_platform = st.selectbox("Primary platform", ["Google AI Overviews", "Google AI Mode", "ChatGPT Search", "Perplexity", "Multi-platform"])
-        draft_text      = st.text_area("Paste article text", height=320)
-        analyze         = st.form_submit_button("Review draft")
+        draft_text       = st.text_area("Paste article text", height=320)
+        analyze          = st.form_submit_button("Review draft")
 
     if analyze:
         if not draft_text.strip():
             st.error("Paste article text first.")
         else:
-            with st.spinner("Reviewing first 400 words across all models... this takes 1-3 minutes."):
+            with st.spinner("Reviewing first 400 words across all models... takes 1-3 minutes."):
                 result = run_review(draft_text, practices)
 
-            # ── Overall score ──────────────────────────────────────────────
             st.divider()
             c1, c2, c3 = st.columns(3)
-            c1.metric("Overall GEO score", f"{result['score']} / 100")
+            c1.metric("Overall GEO score", str(result["score"]) + " / 100")
             c2.metric("Sections reviewed", len(result.get("sections", [])))
             c3.metric("Mode", result["mode"].replace("_", " ").title())
 
-            # ── Executive summary ──────────────────────────────────────────
             if result.get("executive_summary"):
                 st.divider()
                 st.markdown("### Executive Summary")
                 st.markdown(result["executive_summary"])
 
-            # ── Section-by-section ─────────────────────────────────────────
             if result.get("sections"):
                 st.divider()
                 st.markdown("### Section-by-Section Review")
-
                 for sec in result["sections"]:
-                    label     = sec["label"]
-                    original  = sec["original"]
-                    avg_score = sec.get("avg_score")
-                    succeeded = sec.get("models_succeeded", 0)
-
-                    score_color   = "green" if avg_score and avg_score >= 70 else ("orange" if avg_score and avg_score >= 50 else "red")
-                    score_display = f":{score_color}[avg {avg_score}/100]" if avg_score else ""
-                    models_label  = f"({succeeded} model{'s' if succeeded != 1 else ''})"
-
-                    with st.expander(f"**{label}** {score_display} {models_label}", expanded=(avg_score is not None and avg_score < 70)):
-
-                        # Original text
+                    avg   = sec.get("avg_score")
+                    succ  = sec.get("models_succeeded", 0)
+                    color = "green" if avg and avg >= 70 else ("orange" if avg and avg >= 50 else "red")
+                    score_badge = (":" + color + "[avg " + str(avg) + "/100]") if avg else ""
+                    with st.expander("**" + sec["label"] + "** " + score_badge + " (" + str(succ) + " model" + ("s" if succ != 1 else "") + ")", expanded=(avg is not None and avg < 70)):
                         st.markdown("**Original text**")
-                        st.markdown(f"> {original}")
+                        st.markdown("> " + sec["original"])
                         st.divider()
 
-                        # Individual model results
-                        model_tabs = []
-                        model_data = []
-                        for name, key in [("DeepSeek", "deepseek"), ("OpenAI", "openai"), ("Gemini", "gemini")]:
-                            r = sec.get(key)
-                            if r:
-                                model_tabs.append(f"{name} ({r.get('geo_score', '?')}/100)")
-                                model_data.append((name, r))
-
+                        model_data = [(n, k) for n, k in [("DeepSeek", "deepseek"), ("Kimi", "kimi")] if sec.get(k)]
                         if model_data:
-                            tabs = st.tabs([t for t in model_tabs] + ["✅ Consensus"])
-
-                            for i, (name, r) in enumerate(model_data):
+                            tab_labels = [n + " (" + str(sec[k].get("geo_score", "?")) + "/100)" for n, k in model_data] + ["✅ Consensus"]
+                            tabs = st.tabs(tab_labels)
+                            for i, (name, key) in enumerate(model_data):
+                                r = sec[key]
                                 with tabs[i]:
                                     if r.get("issues"):
                                         st.markdown("**Issues found**")
                                         for issue in r["issues"]:
-                                            st.markdown(f"- {issue}")
+                                            st.markdown("- " + str(issue))
                                     if r.get("suggestion"):
                                         st.markdown("**Suggested rewrite**")
-                                        st.markdown(f"> {r['suggestion']}")
+                                        st.markdown("> " + str(r["suggestion"]))
                                     if r.get("why"):
-                                        st.markdown(f"*Why this helps:* {r['why']}")
-
-                            # Consensus tab — always last
+                                        st.markdown("*Why this helps:* " + str(r["why"]))
                             with tabs[-1]:
-                                consensus = sec.get("consensus", {})
-                                if consensus.get("agreement_points"):
-                                    st.markdown("**What all models agreed on**")
-                                    for point in consensus["agreement_points"]:
-                                        st.markdown(f"- {point}")
-                                if consensus.get("consensus_suggestion"):
+                                con = sec.get("consensus", {})
+                                if con.get("agreement_points"):
+                                    st.markdown("**What both models agreed on**")
+                                    for pt in con["agreement_points"]:
+                                        st.markdown("- " + str(pt))
+                                if con.get("consensus_suggestion"):
                                     st.markdown("**Consensus rewrite**")
-                                    st.markdown(f"> {consensus['consensus_suggestion']}")
-                                if consensus.get("consensus_why"):
-                                    st.markdown(f"*Why:* {consensus['consensus_why']}")
-                                if consensus.get("consensus_score"):
-                                    st.metric("Expected GEO score after rewrite", f"{consensus['consensus_score']} / 100")
+                                    st.markdown("> " + str(con["consensus_suggestion"]))
+                                if con.get("consensus_why"):
+                                    st.markdown("*Why:* " + str(con["consensus_why"]))
+                                if con.get("consensus_score"):
+                                    st.metric("Expected GEO score after rewrite", str(con["consensus_score"]) + " / 100")
+                        else:
+                            st.warning("No model results for this section.")
 
-            # ── Heuristic fallback ─────────────────────────────────────────
             elif result.get("suggestions"):
                 st.divider()
                 st.markdown("### Suggested changes")
                 for item in result["suggestions"]:
-                    st.write(f"- {item}")
+                    st.write("- " + item)
 
             save_review(draft_title or "Untitled draft", topic or "", content_type, primary_platform, result)
             st.caption("Review saved to log.")
