@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 from pathlib import Path
 
 import pandas as pd
@@ -219,6 +218,140 @@ Be direct. Start with the overall verdict. Name the 2-3 most important fixes. En
         return f"Executive summary unavailable: {e}"
 
 
+
+# ── Multi-model review functions (inlined) ───────────────────────────────────
+
+def _deepseek_client():
+    from openai import OpenAI
+    key = os.getenv("DEEPSEEK_API_KEY")
+    if not key:
+        raise EnvironmentError("DEEPSEEK_API_KEY not set")
+    return OpenAI(api_key=key, base_url="https://api.deepseek.com")
+
+def _openai_client():
+    from openai import OpenAI
+    key = os.getenv("OPENAI_API_KEY")
+    if not key:
+        raise EnvironmentError("OPENAI_API_KEY not set")
+    return OpenAI(api_key=key)
+
+def _build_section_prompt(section_label, section_text, rules_summary):
+    return f"""You are a GEO (Generative Engine Optimization) editor. Review this article section and give specific, actionable feedback so it gets cited by AI search engines like Google AI Overviews, ChatGPT Search, and Perplexity.
+
+GEO best practices:
+{rules_summary}
+
+Section: {section_label}
+Text:
+\"{section_text}\"
+
+Return ONLY a valid JSON object with these exact keys:
+- "geo_score": integer 0-100 for this section's AI-citation readiness
+- "issues": list of strings, each describing one specific problem (reference the actual words)
+- "suggestion": a rewritten version that fixes the issues (same meaning, better form)
+- "why": one sentence explaining the most important change and why it helps AI citations"""
+
+def review_section_deepseek(section_label, section_text, rules_summary):
+    try:
+        client = _deepseek_client()
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": _build_section_prompt(section_label, section_text, rules_summary)}],
+            max_tokens=800, temperature=0.3,
+            response_format={"type": "json_object"},
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        print(f"[DeepSeek] failed: {e}")
+        return None
+
+def review_section_openai(section_label, section_text, rules_summary):
+    try:
+        client = _openai_client()
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": _build_section_prompt(section_label, section_text, rules_summary)}],
+            max_tokens=800, temperature=0.3,
+            response_format={"type": "json_object"},
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        print(f"[OpenAI] failed: {e}")
+        return None
+
+def review_section_gemini(section_label, section_text, rules_summary):
+    try:
+        import urllib.request
+        key = os.getenv("GEMINI_API_KEY")
+        if not key:
+            return None
+        prompt = _build_section_prompt(section_label, section_text, rules_summary)
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}"
+        payload = json.dumps({
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 800}
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read())
+        raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        return json.loads(raw.strip())
+    except Exception as e:
+        print(f"[Gemini] failed: {e}")
+        return None
+
+def synthesize_consensus(section_label, section_text, ds, oai, gem, rules_summary):
+    available = []
+    if ds:
+        available.append(f"DeepSeek says:\nIssues: {ds.get('issues')}\nSuggestion: {ds.get('suggestion')}\nWhy: {ds.get('why')}")
+    if oai:
+        available.append(f"OpenAI says:\nIssues: {oai.get('issues')}\nSuggestion: {oai.get('suggestion')}\nWhy: {oai.get('why')}")
+    if gem:
+        available.append(f"Gemini says:\nIssues: {gem.get('issues')}\nSuggestion: {gem.get('suggestion')}\nWhy: {gem.get('why')}")
+    if not available:
+        return {"consensus_suggestion": section_text, "consensus_why": "No models returned results.", "consensus_score": None, "agreement_points": []}
+    if len(available) == 1:
+        result = ds or oai or gem
+        return {"consensus_suggestion": result.get("suggestion", section_text), "consensus_why": result.get("why", ""), "consensus_score": result.get("geo_score"), "agreement_points": []}
+    prompt = f"""You are DeepSeek-Reasoner synthesizing GEO feedback from multiple AI models into one authoritative consensus.
+Section: {section_label}
+Original: \"{section_text}\"
+GEO rules: {rules_summary}
+Reviews: {chr(10).join(available)}
+Return ONLY valid JSON with: consensus_suggestion, consensus_why (2 sentences), consensus_score (0-100), agreement_points (list of 1-3 strings)."""
+    for model in ["deepseek-reasoner", "deepseek-chat"]:
+        try:
+            client = _deepseek_client()
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1000, temperature=0.2,
+                response_format={"type": "json_object"},
+            )
+            return json.loads(response.choices[0].message.content)
+        except Exception as e:
+            print(f"[Consensus/{model}] failed: {e}")
+            continue
+    return {"consensus_suggestion": (ds or oai or gem or {}).get("suggestion", section_text), "consensus_why": "Consensus unavailable.", "consensus_score": None, "agreement_points": []}
+
+def multi_model_review_section(section_label, section_text, rules_summary):
+    ds  = review_section_deepseek(section_label, section_text, rules_summary)
+    oai = review_section_openai(section_label, section_text, rules_summary)
+    gem = review_section_gemini(section_label, section_text, rules_summary)
+    consensus = synthesize_consensus(section_label, section_text, ds, oai, gem, rules_summary)
+    scores = [r.get("geo_score") for r in [ds, oai, gem] if r and r.get("geo_score") is not None]
+    return {
+        "label": section_label, "original": section_text,
+        "deepseek": ds, "openai": oai, "gemini": gem,
+        "consensus": consensus,
+        "avg_score": round(sum(scores)/len(scores)) if scores else None,
+        "models_succeeded": sum(1 for r in [ds, oai, gem] if r is not None),
+    }
+
 # ── Main review orchestrator ──────────────────────────────────────────────────
 
 def run_review(text: str, practices: pd.DataFrame) -> dict:
@@ -229,18 +362,12 @@ def run_review(text: str, practices: pd.DataFrame) -> dict:
     sections = split_into_sections(text)
     section_results = []
 
-    try:
-        from multi_model_review import multi_model_review_section
-        use_multi = MULTI_MODE
-    except ImportError:
-        use_multi = False
+    use_multi = MULTI_MODE
 
     for sec in sections:
         if use_multi:
             result = multi_model_review_section(sec["label"], sec["text"], rules_summary)
         else:
-            # Single model fallback
-            from multi_model_review import review_section_deepseek, review_section_openai, review_section_gemini
             ds = review_section_deepseek(sec["label"], sec["text"], rules_summary) if HAS_DEEPSEEK else None
             oai = review_section_openai(sec["label"], sec["text"], rules_summary) if HAS_OPENAI else None
             gem = review_section_gemini(sec["label"], sec["text"], rules_summary) if HAS_GEMINI else None
