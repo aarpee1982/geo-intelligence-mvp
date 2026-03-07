@@ -359,7 +359,19 @@ def run_review(text: str, practices: pd.DataFrame, max_sections: int = 5) -> dic
         return {**score_draft_heuristic(text, practices), "mode": "heuristic"}
 
     rules_summary = get_rules_summary(practices)
-    sections = split_into_sections(text)[:max_sections]
+
+    # Take first 400 words and split into 4 chunks of ~100 words each
+    words = text.split()
+    first_400 = words[:400]
+    chunk_size = 100
+    sections = []
+    for i in range(0, len(first_400), chunk_size):
+        chunk = first_400[i:i+chunk_size]
+        if chunk:
+            start = i + 1
+            end = min(i + chunk_size, len(first_400))
+            sections.append({"label": f"Section {len(sections)+1} (words {start}-{end})", "text": " ".join(chunk)})
+
     section_results = []
 
     use_multi = MULTI_MODE
@@ -583,16 +595,14 @@ with review_tab:
         content_type    = st.selectbox("Content type", ["Blog article", "Landing page", "Thought leadership", "Research page"])
         primary_platform = st.selectbox("Primary platform", ["Google AI Overviews", "Google AI Mode", "ChatGPT Search", "Perplexity", "Multi-platform"])
         draft_text      = st.text_area("Paste article text", height=320)
-        max_sections    = st.slider("Sections to review", min_value=1, max_value=15, value=5,
-                                    help="More sections = slower but deeper. 5 covers opening + key body sections.")
         analyze         = st.form_submit_button("Review draft")
 
     if analyze:
         if not draft_text.strip():
             st.error("Paste article text first.")
         else:
-            with st.spinner(f"Reviewing {max_sections} sections across all models... this takes 1-3 minutes."):
-                result = run_review(draft_text, practices, max_sections=max_sections)
+            with st.spinner("Reviewing first 400 words across all models... this takes 1-3 minutes."):
+                result = run_review(draft_text, practices)
 
             # ── Overall score ──────────────────────────────────────────────
             st.divider()
