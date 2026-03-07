@@ -1,0 +1,41 @@
+watchlist:
+  - name: Google Search Central Blog
+    category: official
+    type: rss
+    url: https://developers.google.com/search/blog/rss.xml
+    platform_relevance: Google AI Overviews; Google AI Mode
+    trust_score: 1.0
+  - name: OpenAI News
+    category: official
+    type: rss
+    url: https://openai.com/news/rss.xml
+    platform_relevance: ChatGPT Search; GPT ecosystem
+    trust_score: 1.0
+  - name: Ahrefs Blog
+    category: vendor_research
+    type: rss
+    url: https://ahrefs.com/blog/feed/
+    platform_relevance: Google AI Overviews; GEO; SEO
+    trust_score: 0.8
+  - name: Semrush Blog
+    category: vendor_research
+    type: rss
+    url: https://www.semrush.com/blog/feed/
+    platform_relevance: GEO; AI Search; SEO
+    trust_score: 0.75
+  - name: arXiv cs.IR recent
+    category: research
+    type: rss
+    url: https://rss.arxiv.org/rss/cs.IR
+    platform_relevance: IR; Retrieval; GEO
+    trust_score: 0.85
+  - name: arXiv cs.CL recent
+    category: research
+    type: rss
+    url: https://rss.arxiv.org/rss/cs.CL
+    platform_relevance: LLMs; language retrieval
+    trust_score: 0.8
+manual_sources:
+  - name: HackMD
+    category: curated_manual
+    note: Add manually through the app when a strong piece appears.

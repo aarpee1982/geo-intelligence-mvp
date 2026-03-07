@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Environment variables / secrets
+.env
+.env.*
+secrets.yaml
+secrets.json
+
+# Generated exports (rebuilt by CI; committed only when intentionally updated)
+exports/*.xlsx
+
+# Feed cache (ephemeral runtime data)
+data/feed_cache/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
