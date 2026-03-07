@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 
 # Make scripts/ importable from app/
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+
 
 from utils import (
     BEST_PRACTICES_CSV,
