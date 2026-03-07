@@ -354,12 +354,12 @@ def multi_model_review_section(section_label, section_text, rules_summary):
 
 # ── Main review orchestrator ──────────────────────────────────────────────────
 
-def run_review(text: str, practices: pd.DataFrame) -> dict:
+def run_review(text: str, practices: pd.DataFrame, max_sections: int = 5) -> dict:
     if not HAS_DEEPSEEK and not HAS_OPENAI and not HAS_GEMINI:
         return {**score_draft_heuristic(text, practices), "mode": "heuristic"}
 
     rules_summary = get_rules_summary(practices)
-    sections = split_into_sections(text)
+    sections = split_into_sections(text)[:max_sections]
     section_results = []
 
     use_multi = MULTI_MODE
@@ -583,14 +583,16 @@ with review_tab:
         content_type    = st.selectbox("Content type", ["Blog article", "Landing page", "Thought leadership", "Research page"])
         primary_platform = st.selectbox("Primary platform", ["Google AI Overviews", "Google AI Mode", "ChatGPT Search", "Perplexity", "Multi-platform"])
         draft_text      = st.text_area("Paste article text", height=320)
+        max_sections    = st.slider("Sections to review", min_value=1, max_value=15, value=5,
+                                    help="More sections = slower but deeper. 5 covers opening + key body sections.")
         analyze         = st.form_submit_button("Review draft")
 
     if analyze:
         if not draft_text.strip():
             st.error("Paste article text first.")
         else:
-            with st.spinner("Reviewing all sections sequentially across models... this takes 2-4 minutes for a full article."):
-                result = run_review(draft_text, practices)
+            with st.spinner(f"Reviewing {max_sections} sections across all models... this takes 1-3 minutes."):
+                result = run_review(draft_text, practices, max_sections=max_sections)
 
             # ── Overall score ──────────────────────────────────────────────
             st.divider()
